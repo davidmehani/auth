@@ -1,79 +1,97 @@
-import { APIGatewayTokenAuthorizerEvent, APIGatewayAuthorizerResult } from 'aws-lambda';
-import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
-import jwt, { JwtHeader } from 'jsonwebtoken';
-import jwksClient from 'jwks-rsa';
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import {
+  APIGatewayAuthorizerResult,
+  APIGatewayRequestAuthorizerEvent,
+} from "aws-lambda";
+import jwt from "jsonwebtoken";
+import { Token } from "../../model/token";
+import { UsersDao } from "../../dao/usersDao";
+import {
+  createAccessToken,
+  createRefreshToken,
+  getTokensFromCookies,
+} from "../../util/jwtUtil";
+import { SSMClient } from "@aws-sdk/client-ssm";
+import { SsmDao } from "../../dao/ssmDao";
+
+const ssm = new SsmDao(new SSMClient({}));
 
 const db = new DynamoDBClient({});
+const dao = new UsersDao(db);
 
-// Cognito User Pool info from environment
-const { USER_POOL_ID, USER_POOL_CLIENT_ID, AWS_REGION} = process.env!;
+export const handler = async (
+  event: APIGatewayRequestAuthorizerEvent,
+): Promise<APIGatewayAuthorizerResult> => {
+  console.log(event);
 
-// JWKS client
-const client = jwksClient({
-  jwksUri: `https://cognito-idp.${AWS_REGION}.amazonaws.com/${USER_POOL_ID}/.well-known/jwks.json`,
-  cache: true,
-  rateLimit: true,
-});
+  const { accessToken, refreshToken } = getTokensFromCookies(event);
+  const { accessSecret, refreshSecret } = await ssm.getJwtSecrets();
 
-// Async helper to get signing key
-async function getSigningKeyAsync(kid: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    client.getSigningKey(kid, (err, key) => {
-      if (err) return reject(err);
-      if (!key) return reject(new Error(`Signing key not found for kid: ${kid}`));
-      resolve(key.getPublicKey());
-    });
-  });
-}
-
-export const handler = async (event: APIGatewayTokenAuthorizerEvent): Promise<APIGatewayAuthorizerResult> => {
-  const token = event.authorizationToken?.replace('Bearer ', '');
-  if (!token) throw new Error('No token provided');
-
-  let decodedToken: any;
+  let userId: string;
+  let email: string;
+  let newAccessToken: string | undefined;
+  let newRefreshToken: string | undefined;
 
   try {
-    // Decode header first to get kid
-    const decodedHeader = jwt.decode(token, { complete: true }) as { header: JwtHeader } | null;
-    if (!decodedHeader) throw new Error('Invalid token');
+    if (!accessToken) throw new Error("No access token provided");
 
-    const kid = decodedHeader.header.kid;
-    const signingKey = await getSigningKeyAsync(kid!);
-
-    decodedToken = jwt.verify(token, signingKey, {
-      audience: USER_POOL_CLIENT_ID,
-      issuer: `https://cognito-idp.${AWS_REGION}.amazonaws.com/${USER_POOL_ID}`,
-    });
+    const decodedToken = jwt.verify(accessToken, accessSecret) as Token;
+    userId = decodedToken.userId;
   } catch (err) {
-    console.error('JWT verification failed', err);
-    throw new Error('Unauthorized');
+    console.log(err);
+    if (err instanceof jwt.TokenExpiredError) {
+      // access token expired — check refresh token
+      if (!refreshToken) throw new Error("No refresh token provided");
+
+      // Verify refresh token
+      try {
+        const decodedRefresh = jwt.verify(refreshToken, refreshSecret) as Token;
+        userId = decodedRefresh.userId;
+        email = decodedRefresh.email;
+      } catch (err) {
+        console.log(err);
+        throw new Error("Invalid refresh token");
+      }
+
+      // Check that the refresh token exists in DB and not revoked
+      const user = await dao.getUser(userId);
+      if (!user || user.refreshToken !== refreshToken) {
+        throw new Error("Refresh token revoked");
+      }
+
+      // Generate new tokens
+      newAccessToken = createAccessToken(userId, email, accessSecret);
+      newRefreshToken = createRefreshToken(userId, email, refreshSecret);
+
+      // Update refresh token in DB
+      await dao.updateTokenForUser(userId, newRefreshToken);
+    } else {
+      throw new Error("Unauthorized");
+    }
   }
 
-  const userId = (decodedToken as any)['cognito:username'];
   const methodArn = event.methodArn;
 
   // check if user exists in DynamoDB
-  const result = await db.send(new GetItemCommand({
-    TableName: 'Users',
-    Key: { userId: { S: userId } },
-  }));
+  const result = await dao.getUser(userId);
 
-  const effect = result.Item ? 'Allow' : 'Deny';
+  const effect = result ? "Allow" : "Deny";
   return {
     principalId: userId,
     policyDocument: {
-      Version: '2012-10-17',
+      Version: "2012-10-17",
       Statement: [
         {
-          Action: 'execute-api:Invoke',
+          Action: "execute-api:Invoke",
           Effect: effect,
           Resource: methodArn,
-        }
-      ]
+        },
+      ],
     },
     context: {
-        role: result.Item?.role?.S,
-        email: decodedToken.email,
-    }
+      state: "Authorized",
+      refreshedAccessToken: newAccessToken,
+      refreshedRefreshToken: newRefreshToken,
+    },
   };
 };

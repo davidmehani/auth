@@ -1,8 +1,16 @@
-import { APIGatewayProxyHandlerV2, APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda';
-import * as responseUtil from '../../util/responseUtil';
+import {
+  APIGatewayProxyEvent,
+  APIGatewayProxyHandler,
+  APIGatewayProxyResult,
+} from "aws-lambda";
+import { ResponseBuilder } from "../../util/responseBuilder";
 
-export const handler: APIGatewayProxyHandlerV2 = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> => {
+export const handler: APIGatewayProxyHandler = async (
+  event: APIGatewayProxyEvent,
+): Promise<APIGatewayProxyResult> => {
   console.log(event);
-  const message = {message: 'hello world'};
-  return responseUtil.success(message);
+
+  const message = { message: "hello world" };
+
+  return ResponseBuilder.success(message).fromContext(event).build();
 };

@@ -1,13 +1,11 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 export async function fetchMessage(): Promise<string> {
-  const idToken = localStorage.getItem("id_token");
-
   const res = await fetch(`${API_BASE_URL}/hello`, {
+    credentials: "include",
     method: "GET",
     headers: {
       "Content-Type": "application/json",
-      ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
     },
   });
 

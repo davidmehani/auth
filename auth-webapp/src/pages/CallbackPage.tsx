@@ -1,18 +1,8 @@
-// src/pages/Callback.tsx
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-const COGNITO_DOMAIN = import.meta.env.VITE_COGNITO_DOMAIN;
-const CLIENT_ID = import.meta.env.VITE_CLIENT_ID;
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 const REDIRECT_URI = import.meta.env.VITE_REDIRECT_URI;
-
-interface TokenResponse {
-  id_token: string;
-  access_token: string;
-  refresh_token?: string;
-  expires_in: number;
-  token_type: string;
-}
 
 const Callback: React.FC = () => {
   const navigate = useNavigate();
@@ -28,32 +18,22 @@ const Callback: React.FC = () => {
       }
 
       try {
-        const body = new URLSearchParams({
-          grant_type: "authorization_code",
-          client_id: CLIENT_ID,
+        const body = JSON.stringify({
           redirect_uri: REDIRECT_URI,
           code,
         });
-
-        const res = await fetch(`${COGNITO_DOMAIN}/oauth2/token`, {
+        const res = await fetch(`${API_BASE_URL}/exchange-code`, {
           method: "POST",
+          credentials: 'include',
           headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
+            "Content-Type": "application/json",
           },
           body,
         });
 
-        if (!res.ok) {
+         if (!res.ok) {
           const text = await res.text();
           throw new Error(`Token exchange failed: ${res.status} ${text}`);
-        }
-
-        const data: TokenResponse = await res.json();
-        
-        localStorage.setItem("id_token", data.id_token);
-        localStorage.setItem("access_token", data.access_token);
-        if (data.refresh_token) {
-          localStorage.setItem("refresh_token", data.refresh_token);
         }
 
         navigate("/", { replace: true });

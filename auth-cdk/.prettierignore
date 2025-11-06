@@ -1,0 +1,5 @@
+# Ignore artifacts:
+cdk.out
+cdk.out/
+build
+coverage
